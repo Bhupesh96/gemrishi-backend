@@ -1,0 +1,4 @@
+
+super admin login details
+email=jadhavharshad89@gmail.com
+password=gemstone@admin#123

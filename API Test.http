@@ -1,0 +1,30 @@
+
+@server = http://localhost:7700/api/v1
+
+// Get All Jewelery Of The Gemstone Type
+GET {{server}}/jewelry/get_all_jewelry_of_gemstone_type?page=1&jewelryType=Ring&gemstoneType=689445d80fd04a71f07ff497
+Accept: application/json
+
+###
+
+
+// Get All Jewellery
+GET {{server}}/jewelry/get-all-jewelry?page=1&jewelryType=Ring
+Accept: application/json
+
+###
+
+
+// Get All gemstone types
+GET {{server}}/subcategory/get_gemstone_cat
+Accept: application/json
+
+###
+
+
+
+// Get All Jewellery Types
+GET {{server}}/jewelrySubCategory/get_all_jewelry_type_list
+Accept: application/json
+
+###
