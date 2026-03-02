@@ -20,7 +20,7 @@ function parseLooseObjectString(str) {
     // Quote unquoted object keys: {key: => {"key":
     const withQuotedKeys = trimmed.replace(
       /([{,]\s*)([A-Za-z0-9_@$]+)\s*:/g,
-      '$1"$2":'
+      '$1"$2":',
     );
 
     // Convert single-quoted string values to double-quoted JSON strings
@@ -100,7 +100,7 @@ const addItemInCart = async (req, res) => {
     if (custom_data_json?.certificate) {
       const selectedCert = item.certificate.find(
         (c) =>
-          c.certificateType === custom_data_json.certificate.certificateType
+          c.certificateType === custom_data_json.certificate.certificateType,
       );
 
       if (!selectedCert) {
@@ -125,7 +125,7 @@ const addItemInCart = async (req, res) => {
 
     for (const cart of retailerUser.cart) {
       const prod = productsInCart.find(
-        (p) => p._id.toString() === cart.item.toString()
+        (p) => p._id.toString() === cart.item.toString(),
       );
 
       if (!prod) {
@@ -145,7 +145,8 @@ const addItemInCart = async (req, res) => {
       if (cart.customization?.certificate) {
         const selectedCert = prod.certificate.find(
           (c) =>
-            c.certificateType === cart.customization.certificate.certificateType
+            c.certificateType ===
+            cart.customization.certificate.certificateType,
         );
 
         if (!selectedCert) {
@@ -166,7 +167,7 @@ const addItemInCart = async (req, res) => {
 
     // ✅ Add or update item in cart
     const cartItem = retailerUser.cart.find(
-      (c) => c.item.toString() === itemId && c.itemType === itemType
+      (c) => c.item.toString() === itemId && c.itemType === itemType,
     );
 
     if (cartItem) {
@@ -202,7 +203,7 @@ const addItemInCart = async (req, res) => {
 // Remove item from cart
 const removeItemFromCart = async (req, res) => {
   try {
-    const {itemId} = req.params;
+    const { itemId } = req.params;
 
     const retailerUserId = req.user._id;
 
@@ -221,7 +222,7 @@ const removeItemFromCart = async (req, res) => {
     }
 
     const cartItemIndex = retailerUser.cart.findIndex(
-      (cartItem) => cartItem.item.toString() === itemId
+      (cartItem) => cartItem.item.toString() === itemId,
     );
 
     if (cartItemIndex > -1) {

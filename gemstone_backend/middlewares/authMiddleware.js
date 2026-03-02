@@ -174,33 +174,37 @@ export const protectRetailer = asyncHandler(async (req, res, next) => {
 export const checkUserLoggedIn = asyncHandler(async (req, res, next) => {
   try {
     const token =
-      req.header("Authorization")?.split(" ")[1] || req.cookies.usertoken;
+      req.header("Authorization")?.split(" ")[1] ||
+      req.cookies.usertoken ||
+      req.cookies.token;
 
     if (token) {
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-        // Check if user exists
-        const user = await User.findById(decoded.id).select(
+        // Try finding User
+        let user = await User.findById(decoded.id).select(
           "email fullName mobileNo",
         );
 
-        if (user) {
-          req.user = user; // Attach user to request
+        // If not User, try finding Retailer
+        if (!user) {
+          user = await Retailer.findById(decoded.id).select(
+            "email fullName mobileNo isActive isBlocked",
+          );
         }
-        // If user not found, we just move on as guest (req.user remains undefined)
-      } catch (error) {
-        // Token verification failed (Expired or Invalid).
-        // We do NOT return an error. We just treat them as a guest.
-        console.log("Guest access: Invalid or expired token ignored.");
+
+        if (user) {
+          req.user = user;
+        }
+      } catch (innerError) {
+        // Token invalid/expired? No problem. Proceed as Guest.
+        console.log("Guest Access: Token invalid or expired, ignoring.");
       }
     }
   } catch (err) {
-    // Safety catch for any other errors, proceed as guest
-    console.error("Auth Middleware Error:", err);
+    console.error("Auth Check Error (Ignored):", err.message);
   }
-
-  // ALWAYS call next() to let the controller handle the logic
   next();
 });
 // export const protectUser = async (req, res, next) => {
