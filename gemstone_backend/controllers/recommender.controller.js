@@ -63,10 +63,19 @@ export async function recommend(req, res) {
 		const { lat: latitude, lng: longitude } = geoData.results[0].geometry;
 
 		// 📅 Prepare birth date
+		// 📅 Prepare birth date
 		const { day, month, year } = dob;
 		const [hour, minute, second] = parseTime(tob.hour, tob.minute, tob.ampm);
 
-		const birthDate = new Date(year, month - 1, day, hour, minute, second);
+		// ✅ THE FIX: Force the Date string to include the IST offset (+05:30)
+		// This guarantees the server calculates the exact same moment as your local computer
+		const formattedMonth = String(month).padStart(2, '0');
+		const formattedDay = String(day).padStart(2, '0');
+		const formattedHour = String(hour).padStart(2, '0');
+		const formattedMinute = String(minute).padStart(2, '0');
+
+		const isoString = `${year}-${formattedMonth}-${formattedDay}T${formattedHour}:${formattedMinute}:00+05:30`;
+		const birthDate = new Date(isoString);
 
 		// Calculate timezone offset (in hours)
 		const timezoneOffset = birthDate.getTimezoneOffset() / 60;
