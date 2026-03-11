@@ -4,7 +4,9 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { sendEmail } from "../utils/sendEmails.js";
 import jwt from "jsonwebtoken";
-import uploadPath from "../utils/uploadPaths.js"; // <-- Import the uploadPath object for file uploads
+import uploadPath from "../utils/uploadPaths.js";
+import fs from "fs";
+import path from "path";
 
 const filesUploadPath = process.env.FILES_UPLOAD_PATH;
 
@@ -12,13 +14,11 @@ const filesUploadPath = process.env.FILES_UPLOAD_PATH;
 function deleteUploadedFiles(req, fileUploadPath) {
   const uploadPath = fileUploadPath;
 
-  // For single file (e.g., upload.single)
   if (req.file) {
     const filePath = path.join(__dirname, uploadPath, req.file.filename);
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   }
 
-  // For multiple files (e.g., upload.fields)
   if (req.files) {
     Object.values(req.files).forEach((fileArr) => {
       fileArr.forEach((file) => {
@@ -31,23 +31,21 @@ function deleteUploadedFiles(req, fileUploadPath) {
 
 const generateJwtToken = (user) => {
   return jwt.sign(
-    {
-      id: user._id,
-      email: user.email,
-    },
-    process.env.JWT_SECRET,
-    {
-      expiresIn: "7d",
-    }
+      {
+        id: user._id,
+        email: user.email,
+      },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: "7d",
+      }
   );
 };
 
 const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
 
-  const user = await User.findOne({
-    email,
-  }).select("email password");
+  const user = await User.findOne({ email }).select("email password cart");
 
   if (!user) {
     return res.status(404).json({ message: "User not found" });
@@ -57,33 +55,82 @@ const login = asyncHandler(async (req, res) => {
     return res.status(401).json({ message: "Invalid credentials" });
   }
 
-  const token = generateJwtToken(user);
+  // ==========================================
+  // 🛒 CART MERGING LOGIC (GUEST TO USER)
+  // ==========================================
+  const guestId = req.cookies?.guestId;
 
+  if (guestId) {
+    // Removed isGuest from select since it's not in your DB schema
+    const guestUser = await User.findById(guestId).select("cart");
+
+    // Removed isGuest check here
+    if (guestUser && guestUser.cart && guestUser.cart.length > 0) {
+
+      let updatedCart = [...user.cart];
+
+      // Clean the guest items to remove old MongoDB subdocument _ids
+      guestUser.cart.forEach((guestItem) => {
+        const existingItemIndex = updatedCart.findIndex(
+            (uItem) =>
+                uItem.item.toString() === guestItem.item.toString() &&
+                uItem.itemType === guestItem.itemType
+        );
+
+        if (existingItemIndex > -1) {
+          updatedCart[existingItemIndex].quantity += guestItem.quantity;
+          updatedCart[existingItemIndex].totalPrice += guestItem.totalPrice;
+        } else {
+          updatedCart.push({
+            itemType: guestItem.itemType,
+            item: guestItem.item,
+            quantity: guestItem.quantity,
+            totalPrice: guestItem.totalPrice,
+            customization: guestItem.customization || {}
+          });
+        }
+      });
+
+      // Force Mongoose to save the new array directly to the database
+      await User.findByIdAndUpdate(user._id, { $set: { cart: updatedCart } }, { new: true });
+
+      // Cleanup
+      await User.findByIdAndDelete(guestId);
+      res.clearCookie("guestId", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
+      });
+    }
+  }
+  // ==========================================
+
+  const token = generateJwtToken(user);
   const userData = await User.findById(user._id).select("-password -wishlist -resetPasswordOtp -resetPasswordExpires");
 
   return res
-    .status(200)
-    .cookie("usertoken", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    })
-    .json({
-      msg: "User logged in successfully",
-      user: userData,
-      token,
-    });
+      .status(200)
+      .cookie("usertoken", token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      })
+      .json({
+        msg: "User logged in successfully",
+        user: userData,
+        token,
+      });
 });
 
 const logoutUser = asyncHandler(async (req, res) => {
   res.status(200)
-    .clearCookie("usertoken", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
-    })
-    .json({ success: true, msg: "User logged out successfully" });
+      .clearCookie("usertoken", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
+      })
+      .json({ success: true, msg: "User logged out successfully" });
 });
 
 const register = asyncHandler(async (req, res) => {
@@ -93,7 +140,7 @@ const register = asyncHandler(async (req, res) => {
 
   const existingUser = await User.findOne({ email });
   if (existingUser) {
-    deleteUploadedFiles(req, userUploadPath); // Clean up uploaded if field is missing
+    deleteUploadedFiles(req, userUploadPath);
     return res.status(409).json({ msg: "User already exists" });
   }
   const hashedPassword = await bcrypt.hash(password, 10);
@@ -111,26 +158,47 @@ const register = asyncHandler(async (req, res) => {
     landmark,
     profilePic: {
       fileName: req.file?.filename || "",
-      url: req.file ? `${imagePath}${req.file.filename}`: null, // ENHANCED: Generate URL for avatar
+      url: req.file ? `${imagePath}${req.file.filename}`: null,
     },
   });
+
+  // ==========================================
+  // 🛒 CART MERGING LOGIC (FOR NEW REGISTRATIONS)
+  // ==========================================
+  const guestId = req.cookies?.guestId;
+
+  if (guestId) {
+    const guestUser = await User.findById(guestId).select("cart");
+
+    if (guestUser && guestUser.cart && guestUser.cart.length > 0) {
+      user.cart = guestUser.cart;
+
+      await User.findByIdAndDelete(guestId);
+      res.clearCookie("guestId", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
+      });
+    }
+  }
+  // ==========================================
 
   const token = generateJwtToken(user);
 
   await user.save();
 
   return res
-    .status(201)
-    .cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    })
-    .json({
-      msg: "User registered successfully",
-      user,
-    });
+      .status(201)
+      .cookie("token", token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      })
+      .json({
+        msg: "User registered successfully",
+        user,
+      });
 });
 
 const getAllUsers = asyncHandler(async (req, res) => {
@@ -139,7 +207,6 @@ const getAllUsers = asyncHandler(async (req, res) => {
   const skip = (page - 1) * limit;
 
   const total = await User.countDocuments();
-
   const users = await User.find().skip(skip).limit(limit);
 
   if (!users || users.length === 0) {
@@ -163,14 +230,14 @@ const updateUser = asyncHandler(async (req, res) => {
 
   const updatedProfilePic = req.file ? {fileName: req.file.filename, url: `${imagePath}${req.file.filename}`,}: null;
   const payload = updatedProfilePic
-    ? { profilePic: updatedProfilePic, ...updateData }
-    : updateData;
+      ? { profilePic: updatedProfilePic, ...updateData }
+      : updateData;
   const user = await User.findByIdAndUpdate(userId, payload, {
     new: true,
     runValidators: false,
   });
   if (!user) {
-    deleteUploadedFiles(req, userUploadPath); // Clean up uploaded if field is missing
+    deleteUploadedFiles(req, userUploadPath);
     return res.status(404).json({ message: "User not found" });
   }
 
@@ -228,8 +295,6 @@ const sendOtp = asyncHandler(async (req, res) => {
   });
 });
 
-
-// api for to verify otp only for password reset
 const verifyOtp = asyncHandler(async (req, res) => {
   const { email, otp } = req.body;
   const user = await User.findOne({ email });
@@ -246,8 +311,6 @@ const verifyOtp = asyncHandler(async (req, res) => {
   });
 });
 
-
-
 const forgotPassword = asyncHandler(async (req, res) => {
   const { email, otp, newPassword } = req.body;
   const user = await User.findOne({ email });
@@ -256,8 +319,8 @@ const forgotPassword = asyncHandler(async (req, res) => {
   }
   const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex");
   if (
-    user.resetPasswordOtp !== hashedOtp ||
-    user.resetPasswordExpires < Date.now()
+      user.resetPasswordOtp !== hashedOtp ||
+      user.resetPasswordExpires < Date.now()
   ) {
     return res.status(400).json({ msg: "Invalid or expired OTP" });
   }
@@ -284,9 +347,6 @@ const getProfile = asyncHandler(async (req, res) => {
   });
 });
 
-
-// Delivery Address
-// Add Delivery address
 const addDeliveryAddress = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const {
@@ -304,26 +364,24 @@ const addDeliveryAddress = asyncHandler(async (req, res) => {
     note,
   } = req.body;
 
-
   const user = await User.findById(userId).select("deliveryAddress");
 
   if (!user) {
     return res.status(404).json({
       success: false,
       msg: "User not found" });
-    }
+  }
 
-    // Check if an address with the same type already exists and return an error
-    const existingAddress = user.deliveryAddress.find(
-        (addr) => addr && addr.addressType && addr.addressType.toLowerCase() === addressType.toLowerCase()
-      );
+  const existingAddress = user.deliveryAddress.find(
+      (addr) => addr && addr.addressType && addr.addressType.toLowerCase() === addressType.toLowerCase()
+  );
 
-      if (existingAddress) {
-          return res.status(409).json({
-              success: false,
-              field: "addressType",
-              msg: `An address with type '${addressType}' already exists.`,
-            });
+  if (existingAddress) {
+    return res.status(409).json({
+      success: false,
+      field: "addressType",
+      msg: `An address with type '${addressType}' already exists.`,
+    });
   }
 
   const newAddress = {
@@ -354,7 +412,6 @@ const addDeliveryAddress = asyncHandler(async (req, res) => {
 
 });
 
-// Delete Delivery address
 const deleteDeliveryAddress = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const { addressId } = req.query;
@@ -369,14 +426,12 @@ const deleteDeliveryAddress = asyncHandler(async (req, res) => {
     return res.status(404).json({ success: false, msg: "User not found." });
   }
 
-  // Check if the address exists before trying to remove it
   const addressExists = user.deliveryAddress.some(addr => addr._id.toString() === addressId);
 
   if (!addressExists) {
     return res.status(404).json({ success: false, msg: "Address not found." });
   }
 
-  // Use pull to remove the sub-document from the array
   user.deliveryAddress.pull({ _id: addressId });
 
   await user.save();
@@ -389,7 +444,6 @@ const deleteDeliveryAddress = asyncHandler(async (req, res) => {
 
 });
 
-// Get a single delivery address
 const getDeliveryAddress = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const { addressId } = req.query;
@@ -417,7 +471,6 @@ const getDeliveryAddress = asyncHandler(async (req, res) => {
   });
 });
 
-// Get all delivery addresses
 const getDeliveryAddressList = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
@@ -434,7 +487,6 @@ const getDeliveryAddressList = asyncHandler(async (req, res) => {
   });
 });
 
-// Update delivery address
 const updateDeliveryAddress = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const { addressId, ...updateData } = req.body;
@@ -455,10 +507,9 @@ const updateDeliveryAddress = asyncHandler(async (req, res) => {
     return res.status(404).json({ success: false, field: "addressId", msg: "Address not found." });
   }
 
-  // If addressType is being updated, check for uniqueness among other addresses
   if (updateData.addressType && updateData.addressType.toLowerCase() !== addressToUpdate.addressType.toLowerCase()) {
     const existingAddress = user.deliveryAddress.find(
-      (addr) => addr.addressType.toLowerCase() === updateData.addressType.toLowerCase()
+        (addr) => addr.addressType.toLowerCase() === updateData.addressType.toLowerCase()
     );
     if (existingAddress) {
       return res.status(409).json({
@@ -469,7 +520,6 @@ const updateDeliveryAddress = asyncHandler(async (req, res) => {
     }
   }
 
-  // Update the fields of the address sub-document
   Object.assign(addressToUpdate, updateData);
 
   await user.save();
@@ -482,9 +532,6 @@ const updateDeliveryAddress = asyncHandler(async (req, res) => {
   });
 });
 
-
-
-
 export {
   login,
   logoutUser,
@@ -496,28 +543,9 @@ export {
   verifyOtp,
   forgotPassword,
   getProfile,
-
-
   addDeliveryAddress,
   getDeliveryAddressList,
   getDeliveryAddress,
   updateDeliveryAddress,
   deleteDeliveryAddress,
-
-
 };
-
-
-
-
-/**
-
-
-  addDeliveryAddress()           - Add Delivery address                   DONE
-  getDeliveryAddressList()       - Get all delivery addresses             DONE
-  getDeliveryAddress()           - Get a single delivery address          DONE
-  updateDeliveryAddress()        - Update delivery address                DONE
-  deleteDeliveryAddress()        - Delete Delivery address                DONE
-
-
-*/

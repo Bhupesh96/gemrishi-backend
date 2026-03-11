@@ -18,12 +18,12 @@ const getCartOwner = async (req, res) => {
 
     if (!guestId) {
       guestId = new mongoose.Types.ObjectId();
-      const isProduction = process.env.NODE_ENV === "production";
 
+      // ✅ FIX 1: Make cross-origin cookies bulletproof for local development
       res.cookie("guestId", guestId, {
         httpOnly: true,
-        secure: isProduction,
-        sameSite: isProduction ? "None" : "Lax",
+        secure: true, // Required for SameSite None
+        sameSite: "None", // Required for cross-origin (frontend 5173 -> backend 7700)
         maxAge: 30 * 24 * 60 * 60 * 1000,
       });
     }
@@ -70,11 +70,9 @@ function parseLooseObjectString(str) {
 // 3. HELPER: Recompute Price (Dynamic Pricing)
 // ==============================================================================
 function recomputeCartItemPrice({ cartItem, latestRates }) {
-  // ✅ ADDED: Pull quantity from cartItem to multiply later
   const { itemType, item, customization = {}, quantity = 1 } = cartItem;
   const round2 = (n) => Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
 
-  // ✅ FIXED: If product was deleted from DB but is still in cart, return 0 safely instead of crashing
   if (!item) return 0;
 
   const normalizeMetal = (val) => {
@@ -88,7 +86,6 @@ function recomputeCartItemPrice({ cartItem, latestRates }) {
 
   let unitPrice = 0;
 
-  // --- Price Logic for Gemstones (Product) ---
   if (itemType === "Product") {
     unitPrice = Number(item.price || 0);
 
@@ -118,9 +115,7 @@ function recomputeCartItemPrice({ cartItem, latestRates }) {
 
       unitPrice += jewelryComponentPrice;
     }
-  }
-  // --- Price Logic for Jewelry ---
-  else if (itemType === "Jewelry") {
+  } else if (itemType === "Jewelry") {
     const jewelry = item;
     unitPrice = Number(jewelry.jewelryPrice || 0);
 
@@ -146,7 +141,6 @@ function recomputeCartItemPrice({ cartItem, latestRates }) {
     }
   }
 
-  // ✅ FIXED: Multiply the computed unit price by the quantity before returning
   return round2(unitPrice * quantity);
 }
 
@@ -213,7 +207,6 @@ const addItemInCart = async (req, res) => {
         return res.status(400).json({ success: false, message: `Certificate Type not available` });
       }
 
-      // ✅ FIXED: Safely calculate unit price to prevent NaN
       let unitPrice = Number(item.price || 0) + Number(item_certificate_obj.price || 0);
 
       let product_customization = {
@@ -263,19 +256,24 @@ const addItemInCart = async (req, res) => {
         product_customization.jewelryId = jewelry._id;
       }
 
-      // ✅ FIXED: Apply quantity multiplier before saving to DB
       const finalTotalPrice = unitPrice * quantity;
 
-      user.cart.push({
+      const cartPayload = {
         itemType,
         item: itemId,
         quantity,
         totalPrice: finalTotalPrice,
         customization: product_customization,
-      });
+      };
 
-      await user.save();
-      return res.status(200).json({ success: true, message: "Item added to cart", cart: user.cart });
+      // ✅ FIX 2: Atomic MongoDB update bypasses Mongoose schema bugs
+      const updatedUser = await User.findByIdAndUpdate(
+          user._id,
+          { $push: { cart: cartPayload } },
+          { new: true } // Returns the newly updated document
+      );
+
+      return res.status(200).json({ success: true, message: "Item added to cart", cart: updatedUser.cart });
     }
 
     // --- JEWELRY LOGIC ---
@@ -287,7 +285,6 @@ const addItemInCart = async (req, res) => {
         return res.status(400).json({ success: false, message: `Failed to parse customization` });
       }
 
-      // ✅ FIXED: Safely calculate unit price
       let unitPrice = Number(item.jewelryPrice || 0);
       const jewelry_customization = {};
       const latestMetalRates = await MetalRates.findOne().sort({ createdAt: -1 });
@@ -341,19 +338,24 @@ const addItemInCart = async (req, res) => {
         jewelry_customization.sizeSystem = custom_data_json.sizeSystem;
       }
 
-      // ✅ FIXED: Apply quantity multiplier before saving to DB
       const finalTotalPrice = unitPrice * quantity;
 
-      user.cart.push({
+      const cartPayload = {
         itemType,
         item: itemId,
         quantity,
         totalPrice: finalTotalPrice,
         customization: jewelry_customization,
-      });
+      };
 
-      await user.save();
-      return res.status(200).json({ success: true, message: "Jewelry added to cart", cart: user.cart });
+      // ✅ FIX 2: Atomic MongoDB update for Jewelry as well
+      const updatedUser = await User.findByIdAndUpdate(
+          user._id,
+          { $push: { cart: cartPayload } },
+          { new: true }
+      );
+
+      return res.status(200).json({ success: true, message: "Jewelry added to cart", cart: updatedUser.cart });
     }
   } catch (error) {
     console.error("Add Cart Error:", error);
@@ -417,7 +419,6 @@ const getAllCartList = async (req, res) => {
     if (latestMetalRates) {
       user.cart.forEach((cartItem) => {
         try {
-          // ✅ FIXED: newTotalPrice now includes the quantity multiplier applied inside the helper
           const newTotalPrice = recomputeCartItemPrice({
             cartItem,
             latestRates: latestMetalRates,
